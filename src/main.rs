@@ -9,6 +9,8 @@ use std::fs::File;
 use std::io::Result;
 use std::io::Write;
 
+extern crate crossbeam;
+
 #[allow(dead_code)]
 fn complex_square_add_loop(c: Complex<f64>) {
     let mut z = Complex{re: 0.0, im: 0.0};
@@ -130,6 +132,7 @@ fn main() {
         std::process::exit(1);
     }
 
+
     let bounds = parse_pair(&args[2], 'x')
         .expect("error parsing image dimensions");
     let upper_left = parse_complex(&args[3])
@@ -139,7 +142,31 @@ fn main() {
 
     let mut pixels = vec![0; bounds.0*bounds.1];
 
-    render(&mut pixels, bounds, upper_left, lower_right);
+    let threads = 8;
+    let rows_per_band = bounds.1 / threads + 1;
+
+    {
+        let bands: Vec<&mut [u8]> =
+            pixels.chunks_mut(rows_per_band*bounds.0).collect();
+        crossbeam::scope(|spawner| {
+            for (i, band) in bands.into_iter().enumerate() {
+                let top = rows_per_band * i;
+                let height = band.len() / bounds.0;
+
+                let band_bounds = (bounds.0, height);
+                let band_upper_left =
+                    pixel_to_point(bounds, (0, top), upper_left, lower_right);
+                let band_lower_right =
+                    pixel_to_point(bounds, (bounds.0, top + height),
+                                   upper_left, lower_right);
+
+                spawner.spawn(move || {
+                    render(band, band_bounds, band_upper_left, band_lower_right);
+                });
+            }
+        })
+    }
+
     write_image(&args[1], &pixels, bounds)
         .expect("error writing PNG file");
 }
